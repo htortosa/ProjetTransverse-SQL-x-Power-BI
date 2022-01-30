@@ -1,5 +1,5 @@
 --1. Etude global
---a. Répartition Adhérant / VIP ....
+--a. Répartition Adhérent / VIP ....
 --Constituer un camembert suivant la répartition suivante :
 --● VIP : client étant VIP (VIP = 1)
 --● NEW_N2 : client ayant adhéré au cours de l'année N-2 (date début adhésion)
@@ -7,6 +7,8 @@
 --● ADHÉRENT : client toujours en cours d'adhésion (date de fin d'adhésion > 2018/01/01)
 --● CHURNER : client ayant churner (date de fin d'adhésion < 2018/01/01)
 --Note : le critère le plus au-dessus est prioritaire, exemple : un client étant VIP, et ayant adhéré sur l'année N-1 sera compté comme étant VIP
+
+--
 	select count(distinct idclient) from client where vip = 1
 	or;
 	select * from client;
@@ -24,12 +26,17 @@
 --b. Comportement du CA GLOBAL par client N-2 vs N-1
 --Constituer une boîte à moustache pour chaque année (N-2 et N-1) comparant le CA TOTAL (TTC) des clients (sommer les achats par client par années)
 -- Somme des achats par client 2016
-create view ca_2016 as select client.idclient, sum(tic_totalttc) as CA_client from client 
-join entete_ticket
-on client.idclient = entete_ticket.idclient
-where extract(year from tic_date) = 2016
-group by client.idclient
-order by CA_client;
+drop view if exists ca_2016;
+
+select extract(year from tic_date) as year,
+min(et.tic_totalttc) as min,
+percentile_disc(0.25) within group(order by et.tic_totalttc) as Q1,
+percentile_disc(0.5) within group(order by et.tic_totalttc) as Q2,
+percentile_disc(0.75) within group(order by et.tic_totalttc) as Q3,
+max(et.tic_totalttc) as max
+from entete_ticket et
+join client ci  on et.idclient=ci.idclient where extract(year from tic_date) in (2016,2017)
+group by extract(year from tic_date)
 
 
 -- Somme des achats par client 2017
@@ -45,9 +52,9 @@ select
 	idclient,
 	ca_client,
 	ntile(4) OVER (order by ca_client) as ca_quartile
-from requete1;
+from ca_2016;
 
-select max(CA_client) from requete1;
+select max(CA_client) from ca_2016;
 
 -- min
 select min(CA_client) from requete1;
@@ -119,20 +126,29 @@ SELECT CASE
 -- diminution des 2 indicateurs, moyen seulement l'un des deux diminue)
 -- Note : on effectuera un trie sur l'indice d'évolution (les positifs en haut, les négatifs en bas.
 
-select codesociete as "Magasin", ville, libelledepartement,libelleregioncommerciale as "Région",
+select ref_magasin.magasin as "Magasin", ville, dept,libelleregioncommerciale as "Région",
 count (distinct client.idclient) as "Nombre de clients"
 from client
 inner join ref_magasin 
-on client.magasin = ref_magasin.codesociete
+on client.magasin = ref_magasin.magasin
 group by "Magasin"
 ;
 
 select ref_magasin.magasin, ville, dept,libelleregioncommerciale as "Région",
-count (distinct client.idclient) as "Nombre de clients", datefinadhesion, 
-(case when datefinadhesion> extract(year from datefinadhesion) = 2016 then 0 else 1 end) as "Adhérent à N-2"
+count (distinct client.idclient) as "Nombre de clients", 
+(select count(idclient) from client where extract(year from datefinadhesion) = '2016' group by ref_magasin.magasin) as "Adhérent à N-2"
 from client
 inner join ref_magasin 
 on client.magasin = ref_magasin.magasin
+group by ref_magasin.magasin
+;
+
+select ref_magasin.magasin, ville, dept,libelleregioncommerciale as "Région",
+count (distinct client.idclient) as "Nombre de clients", datefinadhesion 
+from client
+inner join ref_magasin 
+on client.magasin = ref_magasin.magasin
+where extract(year from datefinadhesion) = 2016
 group by ref_magasin.magasin
 ;
 
@@ -228,12 +244,58 @@ RENAME COLUMN latitude TO latitude_client;
 ALTER TABLE gps_client
 RENAME COLUMN longitude TO longitude_client;
 
---CREATION VUE DE JOINTURE ENTRE DONNEES GPS CLIENT ET MAGASIN
-create view gps_client_mag as select idclient, latitude_client, longitude_client, gps_client.magasin, latitude_mag, longitude_mag from gps_client 
+--CREATION TABLE DE JOINTURE ENTRE DONNEES GPS CLIENT ET MAGASIN
+
+create table geo_client_mag as select idclient, latitude_client, longitude_client, gps_client.magasin, latitude_mag, longitude_mag from gps_client 
 join gps_magasin
 on gps_client.magasin = gps_magasin.magasin
 ;
-select * from gps_client_mag;
+select * from geo_client_mag;
+
+ALTER TABLE geo_client_mag ADD distance_mesuree float;
+
+UPDATE geo_client_mag SET distance_mesuree = 
+
+CREATE FUNCTION dbo.fnCalcDistanceKM(latitude_client FLOAT, latitude_mag FLOAT, longitude_client FLOAT, longitude_mag FLOAT)
+RETURNS FLOAT 
+AS 
+BEGIN
+    RETURN ACOS(SIN(PI()*latitude_client/180.0)*SIN(PI()*latitude_mag/180.0)+COS(PI()*latitude_client/180.0)*COS(PI()*latitude_mag/180.0)*COS(PI()*longitude_mag/180.0-PI()*longitude_client/180.0))*6371
+END;
+
+
+
+CREATE FUNCTION calculate_distance(latitude_client float, longitude_client float, latitude_mag float, longitude_mag float, units varchar)
+RETURNS float AS $dist$
+    DECLARE
+        dist float = 0;
+        radlatitude_client float;
+        radlatitude_mag float;
+        theta float;
+        radtheta float;
+    BEGIN
+        IF latitude_client = latitude_mag AND longitude_client = longitude_mag
+            THEN RETURN dist;
+        ELSE
+            radlatitude_client = pi() * latitude_client / 180;
+            radlatitude_mag = pi() * latitude_mag / 180;
+            theta = longitude_client - longitude_mag;
+            radtheta = pi() * theta / 180;
+            dist = sin(radlatitude_client) * sin(radlatitude_mag) + cos(radlatitude_client) * cos(radlatitude_mag) * cos(radtheta);
+
+            IF dist > 1 THEN dist = 1; END IF;
+
+            dist = acos(dist);
+            dist = dist * 180 / pi();
+            dist = dist * 60 * 1.1515;
+
+            IF units = 'K' THEN dist = dist * 1.609344; END IF;
+            IF units = 'N' THEN dist = dist * 0.8684; END IF;
+
+            RETURN dist;
+        END IF;
+    END;
+
 
 create extension cube;
 create extension earthdistance;
@@ -241,13 +303,10 @@ create table lat_lon (  city varchar(50) primary key,  lat float8 not null,  lon
 insert into lat_lon values('London, GB', 51.67234320, 0.14787970),('New York, NY', 40.91524130, -73.7002720);
 
 select   
-(  
-	(select point(lon,lat) from lat_lon where city = 'London, GB') <@>  
-	(select point(lon,lat) from lat_lon where city = 'New York, NY')  
-) as distance_miles
+(
+	(select point(longitude_client,latitude_client) from geo_client_mag) <@>
+	(select point(longitude_mag,latitude_mag) from geo_client_mag)
+) as distance_miles;
 
-select   
-(  
-	(select point(lon,lat) from lat_lon where city = 'London, GB') <@>  
-	(select point(lon,lat) from lat_lon where city = 'New York, NY')  
-) as distance_miles
+
+acos(sin(latitude_client)*sin(latitude_mag)+cos(latitude_client)*cos(latitude_mag)*cos(longitude_mag-longitude_client))*6371
