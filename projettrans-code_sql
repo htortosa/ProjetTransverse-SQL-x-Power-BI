@@ -1,0 +1,253 @@
+--1. Etude global
+--a. Répartition Adhérant / VIP ....
+--Constituer un camembert suivant la répartition suivante :
+--● VIP : client étant VIP (VIP = 1)
+--● NEW_N2 : client ayant adhéré au cours de l'année N-2 (date début adhésion)
+--● NEW_N1 : client ayant adhéré au cours de l'année N-1 (date début adhésion)
+--● ADHÉRENT : client toujours en cours d'adhésion (date de fin d'adhésion > 2018/01/01)
+--● CHURNER : client ayant churner (date de fin d'adhésion < 2018/01/01)
+--Note : le critère le plus au-dessus est prioritaire, exemple : un client étant VIP, et ayant adhéré sur l'année N-1 sera compté comme étant VIP
+	select count(distinct idclient) from client where vip = 1
+	or;
+	select * from client;
+
+	SELECT CASE
+				WHEN vip = 1 THEN 'VIP'
+				WHEN extract(year from datedebutadhesion) = 2016 THEN 'NEW_N2'
+				WHEN extract(year from datedebutadhesion) = 2017 THEN 'NEW_N1'
+				WHEN extract(year from datefinadhesion) >= 2018 THEN 'ADHÉRENT'
+				WHEN extract(year from datefinadhesion) < 2018 THEN 'CHURNER'
+			END AS "Catégorie",
+			COUNT(distinct idclient) AS "Nb Clients"
+		FROM client
+		GROUP BY "Catégorie";
+--b. Comportement du CA GLOBAL par client N-2 vs N-1
+--Constituer une boîte à moustache pour chaque année (N-2 et N-1) comparant le CA TOTAL (TTC) des clients (sommer les achats par client par années)
+-- Somme des achats par client 2016
+create view ca_2016 as select client.idclient, sum(tic_totalttc) as CA_client from client 
+join entete_ticket
+on client.idclient = entete_ticket.idclient
+where extract(year from tic_date) = 2016
+group by client.idclient
+order by CA_client;
+
+
+-- Somme des achats par client 2017
+create view ca_2017 as select client.idclient, sum(tic_totalttc) as CA_client from client 
+join entete_ticket
+on client.idclient = entete_ticket.idclient
+where extract(year from tic_date) = 2017
+group by client.idclient
+order by CA_client;
+
+-- max
+select 
+	idclient,
+	ca_client,
+	ntile(4) OVER (order by ca_client) as ca_quartile
+from requete1;
+
+select max(CA_client) from requete1;
+
+-- min
+select min(CA_client) from requete1;
+
+-- mediane
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY CA_client) FROM requete1;
+
+--1er quartile
+SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY CA_client) FROM requete1;
+
+--3ème quartile
+SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY CA_client) FROM requete1;
+
+--c. Répartition par âge x sexe
+--Constituer un graphique montrant la répartition par âge x sexe sur l'ensemble des clients.
+-- plusieurs label pour la meme civilite, création nouvelle variable correctement codée (un label = une civilité unique)
+ALTER TABLE client ADD civilite_new varchar(10);
+UPDATE client set civilite_new = (case 
+					when civilite in ('Mr','monsieur','MONSIEUR') then 'Monsieur'
+					when civilite in ('Mme','madame','MADAME') then 'Madame'
+					else null
+	end);
+select distinct(civilite_new) from client;
+alter table client drop column civilite;
+alter table client RENAME COLUMN civilite_new TO civilite;
+select * from client;
+
+-- nouvelle colonne qui définit l'age du client
+ALTER TABLE client ADD AGE integer;
+update client set age = DATE_PART('year',current_date) - DATE_PART('year', datenaissance);
+
+--Code répartition âge x sexe
+SELECT CASE
+            WHEN age between 0 and 10 THEN '0_10ans'
+            WHEN age between 11 and 20 THEN '11_20ans'
+            WHEN age between 21 and 30 THEN '21_30ans'
+			WHEN age between 31 and 40 THEN '31_40ans'
+            WHEN age between 41 and 50 THEN '41_50ans'
+			WHEN age between 51 and 60 THEN '51_60ans'
+			WHEN age between 61 and 70 THEN '61_70ans'
+			WHEN age between 71 and 80 THEN '71_80ans'
+			WHEN age between 81 and 90 THEN '81_90ans'
+			WHEN age between 91 and 100 THEN '91_100ans'
+			else 'others'
+        END AS "Âge",
+        sum (case
+			   when civilite='Monsieur' then 1
+			   else 0
+		end) as Homme,
+		sum (case
+			   when civilite='Madame' then 1
+			   else 0
+		end) as Femme
+    FROM client
+    GROUP BY "Âge";
+
+-- 2. Etude par magasin
+-- a. Résultat par magasin (+1 ligne Total)
+-- Constituer un tableau reprenant les données suivantes :
+-- ● MAGASIN
+-- ● NOMBRE DE CLIENT RATTACHE AU MAGASIN (avec une color_bar en fonction de la quantité)
+-- ● Nombre de client actif sur N-2
+-- ● Nombre de client actif sur N-1
+-- ● % CLIENT N-2 vs N-1 (couleur police : vert si positif, rouge si négatif)
+-- ● TOTAL_TTC N-2
+-- ● TOTAL_TTC N-1
+-- ● Différence entre N-2 et N-1 (couleur police : vert si positif, rouge si négatif)
+-- ● indice évolution (icône de satisfaction : positif si %client actif évolue et total TTC aussi, négatif si 
+-- diminution des 2 indicateurs, moyen seulement l'un des deux diminue)
+-- Note : on effectuera un trie sur l'indice d'évolution (les positifs en haut, les négatifs en bas.
+
+select codesociete as "Magasin", ville, libelledepartement,libelleregioncommerciale as "Région",
+count (distinct client.idclient) as "Nombre de clients"
+from client
+inner join ref_magasin 
+on client.magasin = ref_magasin.codesociete
+group by "Magasin"
+;
+
+select ref_magasin.magasin, ville, dept,libelleregioncommerciale as "Région",
+count (distinct client.idclient) as "Nombre de clients", datefinadhesion, 
+(case when datefinadhesion> extract(year from datefinadhesion) = 2016 then 0 else 1 end) as "Adhérent à N-2"
+from client
+inner join ref_magasin 
+on client.magasin = ref_magasin.magasin
+group by ref_magasin.magasin
+;
+
+select codesociete as "Magasin", ville, libelledepartement,libelleregioncommerciale as "Région",
+(case when extract(year from datefinadhesion) > 2016 then count(distinct client.idclient) else null end) as "Adhérent à N-2",
+(case when extract(year from datefinadhesion) > 2017 then count(distinct client.idclient) else null end) as "Adhérent à N-1"
+from client
+inner join ref_magasin 
+on client.magasin = ref_magasin.codesociete
+group by "Magasin","Adhérent à N-2","Adhérent à N-1"
+;
+
+select client.magasin, sum(entete_ticket.tic_totalttc) from entete_ticket
+join client 
+on entete_ticket.idclient = client.idclient 
+join ref_magasin
+on client.magasin = ref_magasin.magasin
+where extract(year from tic_date) in (2016,2017)
+group by client.magasin;
+
+-- b. Distance CLIENT / MAGASIN
+-- Le but étant de calculer la distance qui existe entre le magasin et le client. Les infos disponible pour le moment sont :
+-- - la ville du magasin
+-- - le code insee du client
+-- Il faut donc télécharger les données GPS des villes et code-insee pour pouvoir calculer la distance : https://public.opendatasoft.com/explore/dataset/correspondance-code-insee-code-postal/
+-- Une fois les données acquises, il faut lier les données GPS composé de la latitude et de la longitude au client et au magasin. (constituer pour chaque client et chaque magasin 2 colonnes : latitude et longitude).
+-- Créer une fonction qui détermine la distance entre 2 points. La fonction doit prendre 4 variable en compte : latitude1, longitude1, latitude2, longitude2
+-- pour savoir si la fonction est correct : ​http://www.lexilogos.com/calcul_distances.htm
+-- Constituer une représentation (tableau ou graphique --> au choix) représentant le nombre de client par distance : 0 à 5km, 5km à 10km, 10km à 20km, 20km à 50km, plus de 50km
+
+--CREATION TABLE et CHARGEMENT DONNEES GPS
+drop table IF EXISTS donnees_gps;
+create table donnees_gps 
+( 
+	CODEINSEE varchar(50) primary key,
+	CODEPOSTAL varchar(50),
+	COMMUNE varchar(50),
+	GEO_POINT_2D varchar(50) 
+); 
+COPY donnees_gps FROM '/Users/ludorobo/Public/Data_Transverse/correspondance-code-insee-code-postal2.csv' CSV HEADER delimiter ';' null '';
+select * from donnees_gps;
+select * from ref_magasin;
+
+--TRANSFORMATION DONNEES_GPS
+ALTER TABLE donnees_gps
+RENAME COLUMN commune TO ville;
+ALTER TABLE donnees_gps
+RENAME COLUMN codepostal TO dept;
+UPDATE donnees_gps SET dept = CAST(LEFT(dept, 2) AS integer);
+ALTER TABLE donnees_gps
+ALTER COLUMN dept TYPE integer
+USING dept::integer;
+ALTER TABLE donnees_gps ADD latitude float;
+ALTER TABLE donnees_gps ADD longitude float;
+UPDATE donnees_gps SET latitude =  CAST(split_part(geo_point_2d::TEXT,',', 1) AS float);
+UPDATE donnees_gps SET longitude = CAST(split_part(geo_point_2d::TEXT,',', 2) AS float);
+ALTER TABLE donnees_gps DROP geo_point_2d;
+UPDATE donnees_gps set ville=REPLACE(ville,'-',' ');
+UPDATE donnees_gps set ville=REPLACE(ville,'ST','SAINT');
+
+-- CLIENT - AJOUT DONNEES GPS
+
+
+-- REF_MAGASIN - AJOUT DONNEES GPS
+ALTER TABLE ref_magasin
+RENAME COLUMN libelledepartement TO dept;
+ALTER TABLE ref_magasin
+RENAME COLUMN codesociete TO magasin;
+UPDATE ref_magasin set ville=REPLACE(ville,'-',' ');
+UPDATE ref_magasin set ville=REPLACE(ville,'ST','SAINT');
+UPDATE ref_magasin set ville=REPLACE(ville,'CEDEX','');
+
+--CREATION VUE DE JOINTURE ENTRE REF_MAGASIN ET DONNEES_GPS
+create view gps_magasin as select magasin, ref_magasin.dept, ref_magasin.ville, latitude, longitude from ref_magasin 
+join donnees_gps
+on ref_magasin.ville = donnees_gps.ville AND ref_magasin.dept = donnees_gps.dept
+;
+select * from gps_magasin;
+ALTER TABLE gps_magasin
+RENAME COLUMN latitude TO latitude_mag;
+ALTER TABLE gps_magasin
+RENAME COLUMN longitude TO longitude_mag;
+
+--CREATION VUE DE JOINTURE ENTRE CLIENT ET DONNEES_GPS
+drop view IF EXISTS gps_client;
+create view gps_client as select idclient, client.codeinsee, client.magasin, donnees_gps.ville, latitude, longitude from client 
+join donnees_gps
+on client.codeinsee = donnees_gps.codeinsee
+;
+
+ALTER TABLE gps_client
+RENAME COLUMN latitude TO latitude_client;
+ALTER TABLE gps_client
+RENAME COLUMN longitude TO longitude_client;
+
+--CREATION VUE DE JOINTURE ENTRE DONNEES GPS CLIENT ET MAGASIN
+create view gps_client_mag as select idclient, latitude_client, longitude_client, gps_client.magasin, latitude_mag, longitude_mag from gps_client 
+join gps_magasin
+on gps_client.magasin = gps_magasin.magasin
+;
+select * from gps_client_mag;
+
+create extension cube;
+create extension earthdistance;
+create table lat_lon (  city varchar(50) primary key,  lat float8 not null,  lon float8 not null);
+insert into lat_lon values('London, GB', 51.67234320, 0.14787970),('New York, NY', 40.91524130, -73.7002720);
+
+select   
+(  
+	(select point(lon,lat) from lat_lon where city = 'London, GB') <@>  
+	(select point(lon,lat) from lat_lon where city = 'New York, NY')  
+) as distance_miles
+
+select   
+(  
+	(select point(lon,lat) from lat_lon where city = 'London, GB') <@>  
+	(select point(lon,lat) from lat_lon where city = 'New York, NY')  
+) as distance_miles
