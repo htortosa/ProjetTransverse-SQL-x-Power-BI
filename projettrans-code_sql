@@ -286,5 +286,6 @@ SELECT CASE
 -- Etude par univers
 -- a. ETUDE PAR UNIVERS
 -- Constituer un histogramme N-2 / N-1 évolution du CA par univers
+
 -- b. TOP PAR UNIVERS
 -- Afficher le top 5 des familles les plus rentable par univers (en fonction de la marge obtenu) (tableau ou graphique -> au choix)
