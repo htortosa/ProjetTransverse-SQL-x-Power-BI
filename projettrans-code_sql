@@ -136,31 +136,17 @@ SELECT CASE
 -- Note : on effectuera un trie sur l'indice d'évolution (les positifs en haut, les négatifs en bas.
 
 -- Ici nous faisons un focus sur les résultats des magasins en étudiant leur nombre de client et leur CA en 2016 et 2017, ainsi que l'évolution des clients et des revenus entre ces 2 années.
-select ref_magasin.magasin as "Magasin", ville, dept,libelleregioncommerciale as "Région",
-count (distinct client.idclient) as "Nombre de clients"
-from client
-inner join ref_magasin 
-on client.magasin = ref_magasin.magasin
-group by "Magasin"
-;
 
 select ref_magasin.magasin, ville, dept,libelleregioncommerciale as "Région",
 count (distinct client.idclient) as "Nombre de clients", 
-(select count(idclient) from client where extract(year from datefinadhesion) = '2016' group by ref_magasin.magasin) as "Adhérent à N-2"
+(select count(distinct idclient) from client where extract(year from datefinadhesion) = '2016' group by ref_magasin.magasin) as "Adhérent à N-2",
+(select count(distinct idclient) from client where extract(year from datefinadhesion) = '2017' group by ref_magasin.magasin) as "Adhérent à N-1"
 from client
 inner join ref_magasin 
 on client.magasin = ref_magasin.magasin
 group by ref_magasin.magasin
 ;
 
-select ref_magasin.magasin, ville, dept,libelleregioncommerciale as "Région",
-count (distinct client.idclient) as "Nombre de clients", datefinadhesion 
-from client
-inner join ref_magasin 
-on client.magasin = ref_magasin.magasin
-where extract(year from datefinadhesion) = 2016
-group by ref_magasin.magasin
-;
 
 select client.magasin, sum(entete_ticket.tic_totalttc) from entete_ticket
 join client 
@@ -273,34 +259,15 @@ select * from geo_client_mag;
 -- Ajout d'une colonne pour intégrer la distance qui sépare les clients du magasin
 ALTER TABLE geo_client_mag ADD distance_mesuree float;
 
--- Calcul de la distance
-UPDATE geo_client_mag SET distance_mesuree = function distance(latitude_client, longitude_client, latitude_mag, longitude_mag, unit) (
-        var radlat1 = Math.PI * latitude_client/180
-        var radlat2 = Math.PI * latitude_mag/180
-        var theta = longitude_client-longitude_mag
-        var radtheta = Math.PI * theta/180
-        var dist = Math.sin(radlat1) * Math.sin(radlat2) + Math.cos(radlat1) * Math.cos(radlat2) * Math.cos(radtheta);
-        dist = Math.acos(dist)
-        dist = dist * 180/Math.PI
-        dist = dist * 60 * 1.1515
-        if (unit=="K") { dist = dist * 1.609344 }
-        if (unit=="N") { dist = dist * 0.8684 }
-        return dist
-);
+-- Calcul de la distance -  Nous ne sommes pas parvenus à installer POSTGIS, ni à définir une fonction efficace pour calculer la distance sans cette extension.
+UPDATE geo_client_mag SET distance_mesuree = SELECT st_distancesphere(ST_MakePoint(longitude_client, latitude_client),ST_MakePoint(longitude_mag, latitude_mag))
+from geo_client_mag;
 
 create extension cube;
 CREATE EXTENSION earthdistance CASCADE;
-create table lat_lon (  city varchar(50) primary key,  lat float8 not null,  lon float8 not null);
-insert into lat_lon values('London, GB', 51.67234320, 0.14787970),('New York, NY', 40.91524130, -73.7002720);
+create extension postgis;
 
-select *,
-(
-	(select point(longitude_client,latitude_client) from geo_client_mag) <@>
-	(select point(longitude_mag,latitude_mag) from geo_client_mag)
-) as distance_miles from geo_client_mag;
-
-
-acos(sin(latitude_client)*sin(latitude_mag)+cos(latitude_client)*cos(latitude_mag)*cos(longitude_mag-longitude_client))*6371
+-- acos(sin(latitude_client)*sin(latitude_mag)+cos(latitude_client)*cos(latitude_mag)*cos(longitude_mag-longitude_client))*6371
 
 -- Répartition des clients selon la distance qui les séparents du magasin auquel ils sont affiliés : 
 
