@@ -29,26 +29,15 @@
 -- Somme des achats par client 2016
 
 ----- Ici nous calculons les variables (min, max, 1er quartile, médiane, 3ème quartile) nécessaires à la construction des "boxplot" comparant le CA Total 2016 et 2017.
------ Nous avons regrouper les achats par clients, par années
-select extract(year from tic_date) as year,
-min(et.tic_totalttc) as min,
-percentile_disc(0.25) within group(order by et.tic_totalttc) as Q1,
-percentile_disc(0.5) within group(order by et.tic_totalttc) as Q2,
-percentile_disc(0.75) within group(order by et.tic_totalttc) as Q3,
-max(et.tic_totalttc) as max
-from entete_ticket et
-join client ci  on et.idclient=ci.idclient where extract(year from tic_date) in (2016,2017)
-group by extract(year from tic_date);
-
-select extract(year from tic_date) as year,
-min(select idclient, sum(et.tic_totalttc) from et group by idclient) as min,
-percentile_disc(0.25) within group(order by select idclient, sum(et.tic_totalttc) from et group by idclient) as Q1,
-percentile_disc(0.5) within group(order by select idclient, sum(et.tic_totalttc) from et group by idclient) as Q2,
-percentile_disc(0.75) within group(order by select idclient, sum(et.tic_totalttc) from et group by idclient) as Q3,
-max(select idclient, sum(et.tic_totalttc) from et group by idclient) as max
-from entete_ticket et
-join client ci  on et.idclient=ci.idclient where extract(year from tic_date) in (2016,2017)
-group by extract(year from tic_date);
+----- Nous avons regrouper les achats par clients et par années, à l'aide de vues :
+-- Somme des achats par client 2016
+drop view if exists ca_2016;
+create view ca_2016 as select client.idclient, sum(tic_totalttc) as CA_client from client 
+join entete_ticket
+on client.idclient = entete_ticket.idclient
+where extract(year from tic_date) = 2016
+group by client.idclient
+order by CA_client;
 
 -- Somme des achats par client 2017
 create view ca_2017 as select client.idclient, sum(tic_totalttc) as CA_client from client 
@@ -58,26 +47,35 @@ where extract(year from tic_date) = 2017
 group by client.idclient
 order by CA_client;
 
--- max
-select 
-	idclient,
-	ca_client,
-	ntile(4) OVER (order by ca_client) as ca_quartile
-from ca_2016;
+-- 2016 : Calcul des min, max et quartiles
+WITH bounds AS (
+    SELECT (AVG(ca_client) - STDDEV_SAMP(ca_client) * 2) as lower_bound,
+           (AVG(ca_client) + STDDEV_SAMP(ca_client) * 2) as upper_bound
+    FROM ca_2016
+)
+select
+min(ca_client) as min,
+percentile_disc(0.25) within group(order by ca_client) as Q1,
+percentile_disc(0.5) within group(order by ca_client) as Q2,
+percentile_disc(0.75) within group(order by ca_client) as Q3,
+max(ca_client) as max
+from ca_2016
+WHERE ca_client BETWEEN (SELECT lower_bound FROM bounds) AND (SELECT upper_bound FROM bounds) and ca_client >0;
 
-select max(CA_client) from ca_2016;
-
--- min
-select min(CA_client) from requete1;
-
--- mediane
-SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY CA_client) FROM requete1;
-
---1er quartile
-SELECT percentile_cont(0.25) WITHIN GROUP (ORDER BY CA_client) FROM requete1;
-
---3ème quartile
-SELECT percentile_cont(0.75) WITHIN GROUP (ORDER BY CA_client) FROM requete1;
+-- 2017 : Calcul des min, max et quartiles
+WITH bounds AS (
+    SELECT (AVG(ca_client) - STDDEV_SAMP(ca_client) * 2) as lower_bound,
+           (AVG(ca_client) + STDDEV_SAMP(ca_client) * 2) as upper_bound
+    FROM ca_2017
+)
+select
+min(ca_client) as min,
+percentile_disc(0.25) within group(order by ca_client) as Q1,
+percentile_disc(0.5) within group(order by ca_client) as Q2,
+percentile_disc(0.75) within group(order by ca_client) as Q3,
+max(ca_client) as max
+from ca_2017
+WHERE ca_client BETWEEN (SELECT lower_bound FROM bounds) AND (SELECT upper_bound FROM bounds) and ca_client >0;
 
 --c. Répartition par âge x sexe
 --Constituer un graphique montrant la répartition par âge x sexe sur l'ensemble des clients.
@@ -277,46 +275,6 @@ ALTER TABLE geo_client_mag ADD distance_mesuree float;
 
 -- Calcul de la distance
 UPDATE geo_client_mag SET distance_mesuree = 
-
-CREATE FUNCTION dbo.fnCalcDistanceKM(latitude_client FLOAT, latitude_mag FLOAT, longitude_client FLOAT, longitude_mag FLOAT)
-RETURNS FLOAT 
-AS 
-BEGIN
-    RETURN ACOS(SIN(PI()*latitude_client/180.0)*SIN(PI()*latitude_mag/180.0)+COS(PI()*latitude_client/180.0)*COS(PI()*latitude_mag/180.0)*COS(PI()*longitude_mag/180.0-PI()*longitude_client/180.0))*6371
-END;
-
-
-
-CREATE FUNCTION calculate_distance(latitude_client float, longitude_client float, latitude_mag float, longitude_mag float, units varchar)
-RETURNS float AS $dist$
-    DECLARE
-        dist float = 0;
-        radlatitude_client float;
-        radlatitude_mag float;
-        theta float;
-        radtheta float;
-    BEGIN
-        IF latitude_client = latitude_mag AND longitude_client = longitude_mag
-            THEN RETURN dist;
-        ELSE
-            radlatitude_client = pi() * latitude_client / 180;
-            radlatitude_mag = pi() * latitude_mag / 180;
-            theta = longitude_client - longitude_mag;
-            radtheta = pi() * theta / 180;
-            dist = sin(radlatitude_client) * sin(radlatitude_mag) + cos(radlatitude_client) * cos(radlatitude_mag) * cos(radtheta);
-
-            IF dist > 1 THEN dist = 1; END IF;
-
-            dist = acos(dist);
-            dist = dist * 180 / pi();
-            dist = dist * 60 * 1.1515;
-
-            IF units = 'K' THEN dist = dist * 1.609344; END IF;
-            IF units = 'N' THEN dist = dist * 0.8684; END IF;
-
-            RETURN dist;
-        END IF;
-    END;
 
 
 create extension cube;
